@@ -1,35 +1,30 @@
 """
-Wraps the Anthropic API for the two AI-driven features in the frontend:
-
-  1. Multilingual Auto-Cataloger — turn a spoken/typed regional-language product
-     description into an English + native-language listing (title, description, tags).
-  2. AI Chat / virtual business manager — answer artisan questions (pricing, general
-     "how do I ...") in whichever language they wrote in.
-
-If ANTHROPIC_API_KEY isn't set (e.g. running the demo without a key yet), both
-functions fall back to a simple rule-based stub so the rest of the app still works
-end-to-end — useful for local dev before wiring up the key.
+Wraps the Gemini API (free tier, no credit card) for the two AI-driven features:
+multilingual auto-cataloging and the AI chat assistant. Falls back to a simple
+rule-based stub if GEMINI_API_KEY isn't set, so the app still runs end-to-end.
 """
 
 import json
 import os
 from typing import Optional
 
-from anthropic import Anthropic
+import google.generativeai as genai
 
 from app.config import settings
 
-_client: Optional[Anthropic] = None
-MODEL = os.getenv("RANGREZ_AI_MODEL", "claude-sonnet-5")
+MODEL = os.getenv("RANGREZ_AI_MODEL", "gemini-2.5-flash")
+_configured = False
 
 
-def _get_client() -> Optional[Anthropic]:
-    global _client
-    if not settings.ANTHROPIC_API_KEY:
+def _get_model() -> Optional["genai.GenerativeModel"]:
+    global _configured
+    api_key = os.getenv("GEMINI_API_KEY", "")
+    if not api_key:
         return None
-    if _client is None:
-        _client = Anthropic(api_key=settings.ANTHROPIC_API_KEY)
-    return _client
+    if not _configured:
+        genai.configure(api_key=api_key)
+        _configured = True
+    return genai.GenerativeModel(MODEL)
 
 
 CATALOG_SYSTEM_PROMPT = """You are Rangrez's multilingual product-cataloging assistant for Indian artisans.
@@ -42,7 +37,7 @@ Given their raw description, produce a JSON object with exactly these fields:
   "craft_category": "<short category, e.g. 'Embroidered Textile', 'Wood Carving', 'Pottery', 'Block Print'>",
   "title_en": "<a clean, SEO-friendly English product title, under 12 words>",
   "title_native": "<the same title translated back into the artisan's own language>",
-  "description_en": "<a polished English product description for an e-commerce/GeM/ONDC listing, 2-4 sentences, highlighting materials, technique, and origin>",
+  "description_en": "<a polished English product description for an e-commerce/GeM/ONDC listing, 2-4 sentences>",
   "description_native": "<the same description in the artisan's own language>",
   "tags": ["<3 to 6 short search tags>"]
 }
@@ -53,7 +48,7 @@ CHAT_SYSTEM_PROMPT = """You are Rangrez, a warm, practical virtual business mana
 and weavers selling through GeM, ONDC, and institutional buyers. Artisans may write in
 Hindi, English, or a mix. Reply in the same language/script they used.
 
-Classify the artisan's message and respond with a JSON object with exactly these fields:
+Respond with a JSON object with exactly these fields:
 {
   "detected_intent": "<one of: pricing_question, catalog_request, general>",
   "reply_language": "<ISO 639-1 code you replied in>",
@@ -73,51 +68,45 @@ def _extract_json(text: str) -> dict:
 
 
 def generate_catalog_listing(spoken_description: str, language_hint: Optional[str] = None) -> dict:
-    client = _get_client()
-    if client is None:
+    model = _get_model()
+    if model is None:
         return _stub_catalog(spoken_description)
 
-    user_content = spoken_description
+    prompt = spoken_description
     if language_hint:
-        user_content += f"\n\n(Artisan indicated their language is: {language_hint})"
+        prompt += f"\n\n(Artisan indicated their language is: {language_hint})"
 
-    response = client.messages.create(
-        model=MODEL,
-        max_tokens=800,
-        system=CATALOG_SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": user_content}],
-    )
-    raw_text = "".join(block.text for block in response.content if block.type == "text")
     try:
-        return _extract_json(raw_text)
-    except (json.JSONDecodeError, ValueError):
+        response = model.generate_content(
+            [CATALOG_SYSTEM_PROMPT, prompt],
+            generation_config={"max_output_tokens": 800},
+        )
+        return _extract_json(response.text)
+    except Exception:
         return _stub_catalog(spoken_description)
 
 
 def chat_reply(message: str, language_hint: Optional[str] = None) -> dict:
-    client = _get_client()
-    if client is None:
+    model = _get_model()
+    if model is None:
         return _stub_chat(message)
 
-    user_content = message
+    prompt = message
     if language_hint:
-        user_content += f"\n\n(Artisan indicated their language is: {language_hint})"
+        prompt += f"\n\n(Artisan indicated their language is: {language_hint})"
 
-    response = client.messages.create(
-        model=MODEL,
-        max_tokens=400,
-        system=CHAT_SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": user_content}],
-    )
-    raw_text = "".join(block.text for block in response.content if block.type == "text")
     try:
-        return _extract_json(raw_text)
-    except (json.JSONDecodeError, ValueError):
+        response = model.generate_content(
+            [CHAT_SYSTEM_PROMPT, prompt],
+            generation_config={"max_output_tokens": 400},
+        )
+        return _extract_json(response.text)
+    except Exception:
         return _stub_chat(message)
 
 
 # ---------------------------------------------------------------------------
-# Rule-based fallbacks (used only when no API key is configured yet)
+# Rule-based fallbacks (used only when no API key is configured)
 # ---------------------------------------------------------------------------
 
 _PRICE_KEYWORDS = ["price", "cost", "kimat", "keemat", "\u0915\u0940\u092e\u0924", "\u092d\u093e\u0935", "rate"]
@@ -160,4 +149,4 @@ def _stub_chat(message: str) -> dict:
             if is_hindi
             else "Got it — tell me more about your craft and I can help catalog or price it."
         ),
-    }
+    }           
