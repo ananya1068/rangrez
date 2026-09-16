@@ -5,6 +5,10 @@ from app.database import Base, engine, SessionLocal
 from app.routers import auth_routes, pricing, chat, camera, listings, profile, orders
 from app.seed_data import run_all_seeds
 
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse
+import os
+
 Base.metadata.create_all(bind=engine)
 
 app = FastAPI(
@@ -45,13 +49,13 @@ def seed_on_startup():
         db.close()
 
 
+STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
+app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
+
+
 @app.get("/")
 def root():
-    return {
-        "service": "Rangrez API",
-        "status": "running",
-        "docs": "/docs",
-    }
+    return FileResponse(os.path.join(STATIC_DIR, "index.html"))
 
 
 @app.get("/api/health")
